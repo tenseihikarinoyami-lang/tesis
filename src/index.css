@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Instrument+Serif:ital,wght@0,400;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-serif: "Instrument Serif", serif;
+}
+
+:root {
+  --background: #000000;
+  --foreground: #ffffff;
+  --card: #0a0a0a;
+  --card-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #000000;
+  --secondary: #1a1a1a;
+  --secondary-foreground: #ffffff;
+  --muted: #1a1a1a;
+  --muted-foreground: #888888;
+  --accent: #22c55e; /* Academic green energy */
+  --border: #333333;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.serif {
+  font-family: var(--font-serif);
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.text-gradient {
+  background: linear-gradient(to bottom right, #fff 30%, #555 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
