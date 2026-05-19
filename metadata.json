@@ -1,6 +1,8 @@
 {
-  "name": "ThesisForge AI",
-  "description": "Plataforma avanzada de generación y gestión de tesis académicas con IA, validación de referencias y orquestación multi-modelo para resultados éticos y profesionales.",
+  "name": "Thesis Master AI",
+  "description": "Asistente inteligente para la redacción de tesis académicas siguiendo lineamientos IUTA/IUTAR/UPTAEB.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

@@ -1,462 +1,436 @@
-import { useState, useEffect, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import React, { useState, useEffect } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { 
-  ChevronLeft, 
-  Save, 
-  Wand2, 
-  Settings2, 
-  History, 
+  Play, 
   FileText, 
-  Database, 
-  BookMarked,
-  Layout,
-  Send,
-  Loader2,
-  Trash2,
-  Plus,
-  Download,
-  Share2,
-  Rocket
+  Save, 
+  ChevronLeft, 
+  Loader2, 
+  BookCheck, 
+  Settings, 
+  Share2, 
+  Clock,
+  LayoutGrid,
+  FileSearch,
+  MessageSquare,
+  CheckCircle2,
+  Sparkles
 } from "lucide-react";
+import { ThesisProject, ProjectGenerationStatus, THESIS_CHAPTERS } from "../types";
+import { orchestrateThesis } from "../services/aiService";
 import { projectService } from "../services/projectService";
-import { useAuth } from "../contexts/AuthContext";
-import { generateContent, orchestrateThesis } from "../services/aiService";
-import { ThesisProject, ThesisChunk, AIProvider, CitationMetadata, ProjectGenerationStatus } from "../types";
-import { cn } from "../lib/utils";
-import { exportToMarkdown, downloadFile, exportToBibTeX, generateWordDoc } from "../lib/exportUtils";
+import { generateWordDoc, downloadFile } from "../lib/exportUtils";
 import { saveAs } from "file-saver";
 import ReactMarkdown from "react-markdown";
-import ModelStatus from "../components/editor/ModelStatus";
-import CitationManager from "../components/editor/CitationManager";
 import { motion, AnimatePresence } from "motion/react";
-import { THESIS_CHAPTERS } from "../types";
+import { cn } from "../lib/utils";
 
-export default function ProjectPage() {
-  const { id } = useParams<{ id: string }>();
+import { 
+  collection, 
+  doc, 
+  onSnapshot
+} from "firebase/firestore";
+import { db } from "../lib/firebase";
+
+const ProjectPage: React.FC = () => {
+  const { id } = useParams();
+  const { state } = useLocation();
   const navigate = useNavigate();
-  const { user, loading: authLoading } = useAuth();
-  const [project, setProject] = useState<ThesisProject | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [generationMsg, setGenerationMsg] = useState("");
-  const [activeChapter, setActiveChapter] = useState(THESIS_CHAPTERS[0]);
-  const [status, setStatus] = useState<"idle" | "generating" | "error">("idle");
-  const [activeProvider, setActiveProvider] = useState<AIProvider | undefined>();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [rightPanel, setRightPanel] = useState<"research" | "config" | "none">("research");
+  
+  const [project, setProject] = useState<ThesisProject | null>(state?.project || null);
+  const [activeChapter, setActiveChapter] = useState(0);
+  const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const [statusMsg, setStatusMsg] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
-    if (!authLoading && !user) navigate("/");
-    if (user && id) loadProject();
-  }, [id, user, authLoading, navigate]);
-
-  const loadProject = async () => {
     if (!id) return;
-    setLoading(true);
-    try {
-      const p = await projectService.getProject(id);
-      if (p) {
-        setProject(p);
-        if (p.chunks.length === 0) {
-          const initialChunks = THESIS_CHAPTERS.map(ch => ({
-            id: Math.random().toString(36).substring(2, 11),
-            chapter: ch,
-            title: ch,
-            content: "",
-            status: "draft" as const,
-            updatedAt: new Date().toISOString()
-          }));
-          const updated = { ...p, chunks: initialChunks };
-          setProject(updated);
-          // Don't save all at once to avoid quota, but usually needed
-          for (const ch of initialChunks) {
-            await projectService.saveChunk(p.id, ch);
-          }
-        }
-      } else {
-        navigate("/dashboard");
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  const activeChunk = project?.chunks.find(c => c.chapter === activeChapter);
-
-  const handleUpdateContent = async (content: string) => {
-    if (!project || !activeChunk) return;
-    const newChunks = project.chunks.map(c => 
-      c.chapter === activeChapter ? { ...c, content, updatedAt: new Date().toISOString() } : c
-    );
-    const updatedChunk = newChunks.find(c => c.chapter === activeChapter)!;
-    setProject({ ...project, chunks: newChunks });
-    await projectService.saveChunk(project.id, updatedChunk);
-  };
-
-  const handleGenerate = async () => {
-    if (!project || !activeChunk) return;
-    setStatus("generating");
-    
-    const prompt = `Escribe la sección de "${activeChapter}" para mi tesis titulada "${project.title}". 
-Objetivo: ${project.description}
-Hipótesis: ${project.hypothesis}
-Citas validadas para usar: ${project.validatedCitations.map(c => `${c.authors[0]} (${c.year}) - ${c.title}`).join("; ")}
-
-Instrucciones: Se profesional, usa un tono académico riguroso pero humano (que parezca escrito por un estudiante brillante).`;
-
-    try {
-      const result = await generateContent(prompt, { 
-        section: activeChapter,
-        context: `Título: ${project.title}. Descripción: ${project.description}. Hipótesis: ${project.hypothesis}`
-      });
-      setActiveProvider(result.provider);
-      await handleUpdateContent(result.content);
-      setStatus("idle");
-    } catch (err) {
-      setStatus("error");
-    }
-  };
-
-  const handleAddCitation = async (citation: CitationMetadata) => {
-    if (!project) return;
-    if (project.validatedCitations.some(c => c.doi === citation.doi)) return;
-    const updated = { ...project, validatedCitations: [...project.validatedCitations, citation] };
-    setProject(updated);
-    await projectService.saveCitation(project.id, citation);
-  };
-
-  const startAutomatedThesis = async () => {
-    console.log("startAutomatedThesis triggered - Bypassing confirm");
-    if (!project) {
-      console.error("No project found in state");
-      return;
-    }
-    
-    console.log("Starting automated orchestration for project:", project.id);
-    setStatus("generating");
-    setGenerationMsg("Preparando entorno de investigación...");
-    
-    try {
-      // Force initial status update in UI
-      setProject(prev => prev ? ({ ...prev, generationStatus: ProjectGenerationStatus.PLANNING }) : null);
-
-      await orchestrateThesis(project, async (status, msg, updatedP) => {
-        console.log(`Orchestration Progress: [${status}] ${msg}`);
-        setGenerationMsg(msg);
-        setProject({ ...updatedP });
+    // Realtime Listener
+    const unsub = onSnapshot(doc(db, "thesis_projects", id), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data() as ThesisProject;
+        setProject(data);
         
-        // Persist metadata and chunks as they come
-        try {
-          await projectService.saveProject(updatedP);
-          for (const chunk of updatedP.chunks) {
-            if (chunk.status === "generated") {
-              await projectService.saveChunk(updatedP.id, chunk);
-            }
+        // Auto-update orchestration local state based on backend status
+        if (data.generationStatus === ProjectGenerationStatus.WRITING || 
+            data.generationStatus === ProjectGenerationStatus.PLANNING ||
+            data.generationStatus === ProjectGenerationStatus.RESEARCHING) {
+          setIsOrchestrating(true);
+          
+          // Show meaningful status messages based on chapters
+          const currentChunk = data.chunks.find(c => c.status === "generating");
+          if (currentChunk) {
+            setStatusMsg(`Generando ${currentChunk.chapter} de forma asíncrona...`);
+          } else if (data.generationStatus === ProjectGenerationStatus.PLANNING) {
+            setStatusMsg("Servidor planificando estructura de capítulos...");
           }
-        } catch (saveError) {
-          console.error("Error saving progress:", saveError);
+        } else {
+          setIsOrchestrating(false);
+          if (data.generationStatus === ProjectGenerationStatus.COMPLETED) {
+            setStatusMsg("Generación completada exitosamente.");
+          } else if (data.generationStatus === ProjectGenerationStatus.ERROR) {
+            setStatusMsg("El servidor encontró un error durante la generación.");
+          }
         }
+      }
+    });
 
-        if (status === ProjectGenerationStatus.COMPLETED || status === ProjectGenerationStatus.ERROR) {
-          setStatus("idle");
-        }
-      });
+    return () => unsub();
+  }, [id]);
+
+  const handleUpdateProject = async (updates: Partial<ThesisProject>) => {
+    if (!project) return;
+    setIsSaving(true);
+    try {
+      await projectService.updateProject(project.id, updates);
+      // No need to setProject locally, onSnapshot will handle it
     } catch (err) {
-      console.error("Critical orchestration error:", err);
-      setStatus("error");
-      setGenerationMsg("Error fatal en el núcleo de redacción.");
+      console.error("Error updating project:", err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  if (authLoading || loading) return (
-    <div className="flex h-screen items-center justify-center">
-      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+  const runFullGeneration = async () => {
+    if (!project || isOrchestrating) return;
+    
+    // We don't setIsOrchestrating(true) here because onSnapshot will do it
+    // when the backend updates the status
+    
+    await orchestrateThesis(project, (status, msg) => {
+      setStatusMsg(msg);
+      // Local state will follow Firestore updates
+    });
+  };
+
+  if (!project) return (
+    <div className="flex flex-col items-center justify-center py-20 opacity-30">
+       <Loader2 className="w-8 h-8 animate-spin" />
     </div>
   );
-  if (!project) return null;
 
-  const isGenerating = status === "generating" || 
-    (project.generationStatus === ProjectGenerationStatus.PLANNING || 
-     project.generationStatus === ProjectGenerationStatus.RESEARCHING || 
-     project.generationStatus === ProjectGenerationStatus.WRITING || 
-     project.generationStatus === ProjectGenerationStatus.FINALIZING);
+  const activeChunk = project.chunks[activeChapter];
 
   return (
-    <div className="flex h-[calc(100vh-80px)] overflow-hidden bg-black selection:bg-accent selection:text-black">
-      {/* Sidebar - Chapter Navigation */}
-      <motion.aside 
-        initial={false}
-        animate={{ width: sidebarOpen ? 280 : 0, opacity: sidebarOpen ? 1 : 0 }}
-        className="bg-black/50 border-r border-white/5 flex flex-col z-20 backdrop-blur-xl"
-      >
-        <div className="p-8 border-b border-white/5 flex justify-between items-center bg-white/5">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-accent">Protocolos de Estructura</h2>
-          <Layout className="h-4 w-4 text-accent/50" />
+    <div className="flex flex-col gap-6 animate-in fade-in duration-700">
+      
+      {/* Upper Navigation / Meta */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className="flex items-center gap-3 sm:gap-4">
+          <button 
+            onClick={() => navigate("/")} 
+            className="p-2 sm:p-2.5 text-gray-400 hover:text-gray-900 border border-transparent hover:border-gray-200 rounded-xl transition-all active:scale-95"
+          >
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+          <div className="h-8 sm:h-10 w-[1px] bg-gray-200" />
+          <div className="space-y-0.5">
+            <h1 className="text-lg sm:text-xl font-display font-bold text-gray-900 line-clamp-1 tracking-tight">{project.title}</h1>
+            <div className="flex items-center gap-2 sm:gap-3 text-[9px] sm:text-[10px] uppercase font-black text-gray-400 tracking-widest">
+               <span className="hidden sm:inline">Unv. {project.university}</span>
+               <span className="sm:hidden">{project.university}</span>
+               <div className="w-1 h-1 bg-gray-300 rounded-full" />
+               <div className="flex items-center gap-1">
+                 <Clock className="w-3 h-3" />
+                 <span>Actu. hace poco</span>
+               </div>
+            </div>
+          </div>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {THESIS_CHAPTERS.map((ch) => (
-            <button
-              key={ch}
-              onClick={() => setActiveChapter(ch)}
-              className={cn(
-                "w-full text-left px-5 py-3.5 rounded-2xl text-xs transition-all flex items-center justify-between group border border-transparent",
-                activeChapter === ch 
-                  ? "bg-white text-black font-black uppercase tracking-widest shadow-[0_0_20px_rgba(255,255,255,0.1)]" 
-                  : "hover:bg-white/5 text-muted-foreground hover:text-white"
-              )}
-            >
-              <span className="truncate italic">{ch}</span>
-              {project.chunks.find(c => c.chapter === ch)?.content.length ? (
-                <div className={cn("h-1.5 w-1.5 rounded-full bg-accent animate-pulse", activeChapter === ch && "bg-black")} />
-              ) : null}
-            </button>
-          ))}
-        </div>
-        <div className="p-6 border-t border-white/5">
-           <button onClick={() => navigate("/dashboard")} className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-accent transition-colors group">
-             <ChevronLeft className="h-4 w-4 group-hover:-translate-x-1 transition-transform" /> Retornar
+
+        <div className="flex items-center justify-between lg:justify-end gap-3 w-full lg:w-auto">
+           <div className="flex items-center bg-white border border-gray-100 p-1 rounded-xl shadow-sm">
+              <button className="p-2 text-gray-400 hover:text-brand-blue rounded-lg transition-all" title="Ver cuadrícula">
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={async () => {
+                  const blob = await generateWordDoc(project);
+                  saveAs(blob, `${project.title.replace(/\s/g, '_')}.docx`);
+                }}
+                className="p-2 text-gray-400 hover:text-brand-blue rounded-lg transition-all" title="Exportar a Word"
+              >
+                <FileText className="w-4 h-4" />
+              </button>
+              <button className="p-2 text-gray-400 hover:text-brand-blue rounded-lg transition-all" title="Compartir">
+                <Share2 className="w-4 h-4" />
+              </button>
+           </div>
+           
+           <button 
+            onClick={runFullGeneration}
+            disabled={isOrchestrating}
+            className="flex-1 lg:flex-none flex items-center justify-center gap-3 px-6 py-3 bg-brand-blue text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-brand-blue/20 hover:bg-blue-700 disabled:opacity-50 transition-all active:scale-95"
+           >
+             {isOrchestrating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+             <span>{isOrchestrating ? "Redactando..." : "Orquestar"}</span>
            </button>
         </div>
-      </motion.aside>
-
-      {/* Main Content Area */}
-      <main className="flex-1 flex flex-col relative bg-black lg:rounded-tl-[3.5rem] border-l border-white/5 shadow-[0_0_50px_rgba(0,0,0,0.5)] z-10 overflow-hidden">
-        {/* Header toolbar */}
-        <header className="h-20 border-b border-white/5 flex items-center justify-between px-10 bg-white/5 backdrop-blur-md">
-          <div className="flex items-center gap-6">
-             <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-3 hover:bg-white/5 rounded-xl transition-all border border-transparent hover:border-white/10">
-               <Layout className="h-5 w-5 text-white/50" />
-             </button>
-             <div>
-               <h1 className="text-xl font-black italic uppercase tracking-tight text-white leading-none">{activeChapter}</h1>
-               <div className="mt-1 flex items-center gap-4">
-                 <ModelStatus provider={activeProvider} status={status} />
-                 {generationMsg && (
-                   <span className="text-[10px] font-mono text-accent animate-pulse uppercase tracking-widest">
-                     [{project.generationStatus}] {" >> "} {generationMsg}
-                   </span>
-                 )}
-               </div>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-start">
+        
+        {/* Sidebar Structure */}
+        <div className="order-2 lg:order-1 lg:col-span-3 space-y-8 lg:sticky lg:top-28">
+          <div className="bg-gray-900 border border-white/5 rounded-[2.5rem] overflow-hidden shadow-2xl">
+             <div className="px-6 py-5 bg-white/5 border-b border-white/5 flex items-center justify-between backdrop-blur-md">
+                <span className="text-[9px] font-black text-white/40 uppercase tracking-[0.3em]">Scientific Structure</span>
+                {isOrchestrating && <div className="w-2 h-2 bg-brand-blue rounded-full animate-pulse shadow-[0_0_12px_rgba(59,130,246,0.8)]" />}
+             </div>
+             <div className="p-3 space-y-1">
+                {project.chunks.map((chunk, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => setActiveChapter(idx)}
+                    className={cn(
+                      "w-full text-left p-4 rounded-2xl transition-all text-sm font-medium flex items-center justify-between group group/item relative overflow-hidden",
+                      activeChapter === idx 
+                        ? "bg-brand-blue text-white shadow-xl shadow-brand-blue/20" 
+                        : "hover:bg-white/5 text-white/40 hover:text-white"
+                    )}
+                  >
+                    <div className="flex items-center gap-4 w-[85%] relative z-10">
+                       <span className={cn(
+                         "text-[10px] font-mono shrink-0 px-2 py-1 rounded-lg border transition-colors",
+                         activeChapter === idx ? "bg-white/20 border-white/20 text-white" : "bg-white/5 border-white/5 text-white/20"
+                       )}>
+                         {(idx + 1).toString().padStart(2, '0')}
+                       </span>
+                       <span className="truncate font-display font-medium tracking-tight">{chunk.chapter}</span>
+                    </div>
+                    {chunk.status === "completed" ? (
+                      <CheckCircle2 className={cn("w-4 h-4 relative z-10", activeChapter === idx ? "text-white" : "text-brand-blue/60")} />
+                    ) : (
+                      <div className="w-4 h-4 rounded-full border-2 border-dashed border-white/10 group-hover/item:border-brand-blue transition-colors relative z-10" />
+                    )}
+                  </button>
+                ))}
              </div>
           </div>
-          
-          <div className="flex items-center gap-4">
-             <div className="flex items-center glass p-1 rounded-2xl mr-4">
-               <button 
-                 onClick={async () => {
-                   try {
-                     const blob = await generateWordDoc(project);
-                     saveAs(blob, `${project.title}.docx`);
-                   } catch (err) {
-                     console.error("Error generating word doc:", err);
-                     alert("Error al generar el documento Word");
-                   }
-                 }}
-                 className="p-3 text-blue-400 hover:text-white hover:bg-blue-400/10 rounded-xl transition-all"
-                 title="Descargar Microsoft Word (.docx)"
-               >
-                 <FileText className="h-5 w-5" />
-               </button>
-               <button 
-                 onClick={() => {
-                   const md = exportToMarkdown(project);
-                   downloadFile(md, `${project.title}.md`, "text/markdown");
-                 }}
-                 className="p-3 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all"
-                 title="Exportar Markdown"
-               >
-                 <Download className="h-5 w-5" />
-               </button>
-               <button 
-                 onClick={() => {
-                   const bib = exportToBibTeX(project);
-                   downloadFile(bib, `references.bib`, "text/plain");
-                 }}
-                 className="p-3 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all"
-                 title="Exportar Referencias"
-               >
-                 <Share2 className="h-5 w-5" />
-               </button>
+
+          <div className="bg-gradient-to-br from-brand-blue to-brand-indigo rounded-[2.5rem] p-8 text-white space-y-6 relative overflow-hidden shadow-2xl shadow-brand-blue/20">
+             <div className="absolute -top-10 -right-10 opacity-20 rotate-12">
+                <Sparkles className="w-40 h-40" />
+             </div>
+             <div className="flex items-center gap-3 relative z-10">
+                <div className="w-10 h-10 rounded-2xl bg-white/10 flex items-center justify-center backdrop-blur-xl border border-white/10">
+                   <FileSearch className="w-5 h-5" />
+                 </div>
+                <span className="text-[10px] font-black uppercase tracking-[0.3em] text-white">AI Core Advisor</span>
+             </div>
+             <div className="relative z-10">
+                {statusMsg ? (
+                  <motion.p 
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="text-sm text-white font-medium leading-relaxed"
+                  >
+                    "{statusMsg}"
+                  </motion.p>
+                ) : (
+                  <p className="text-xs text-white/80 leading-relaxed font-medium">
+                    Optimización algorítmica activa para el <span className="text-white font-black underline decoration-white/30 underline-offset-4">Capítulo {activeChapter + 1}</span>.
+                  </p>
+                )}
+             </div>
+          </div>
+        </div>
+
+        {/* Editor Preview */}
+        <div className="order-1 lg:order-2 lg:col-span-9">
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-gray-900 rounded-[2.5rem] sm:rounded-[3.5rem] min-h-[600px] lg:min-h-[1000px] flex flex-col shadow-2xl border border-white/5 relative overflow-hidden"
+          >
+             {/* Decorative Background Elements */}
+             <div className="absolute top-0 right-0 w-[50%] h-[30%] bg-brand-blue blur-[180px] rounded-full opacity-10 pointer-events-none" />
+             <div className="absolute bottom-0 left-0 w-[40%] h-[30%] bg-brand-indigo blur-[150px] rounded-full opacity-10 pointer-events-none" />
+
+             {/* Progress bar at the top of the card */}
+             <div className="absolute top-0 left-0 w-full h-1 flex bg-white/5 rounded-t-[2.5rem] sm:rounded-t-[3.5rem] overflow-hidden z-30">
+                {project.chunks.map((c, i) => (
+                  <div 
+                    key={i} 
+                    className={cn(
+                      "h-full transition-all duration-1000 shadow-[0_0_10px_rgba(59,130,246,0.5)]",
+                      c.status === "completed" ? "bg-brand-blue" : "bg-transparent"
+                    )} 
+                    style={{ width: `${100 / project.chunks.length}%` }} 
+                  />
+                ))}
              </div>
 
-             <button 
-               onClick={handleGenerate}
-               disabled={isGenerating}
-               className="group relative"
-             >
-               <div className="absolute inset-0 bg-accent blur-md opacity-20 group-hover:opacity-40 transition-opacity" />
-               <div className="relative bg-white text-black px-6 py-3 rounded-full text-xs font-black uppercase tracking-widest flex items-center gap-3 hover:bg-accent transition-all active:scale-95 disabled:opacity-50">
-                 {status === "generating" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4 group-hover:rotate-12 transition-transform" />}
-                 Ejecutar SECCIÓN
-               </div>
-             </button>
-
-             <button 
-               onClick={startAutomatedThesis}
-               disabled={isGenerating}
-               className="group relative"
-             >
-               <div className="absolute inset-0 bg-blue-500 blur-md opacity-20 group-hover:opacity-40 transition-opacity" />
-               <div className="relative bg-blue-600 text-white px-6 py-3 rounded-full text-xs font-black uppercase tracking-widest flex items-center gap-3 hover:bg-blue-400 transition-all active:scale-95 disabled:opacity-50">
-                 {status === "generating" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4 animate-bounce" />}
-                 MODO AUTÓMATA (TESIS COMPLETA)
-               </div>
-             </button>
-          </div>
-        </header>
-
-        {/* Editor vs Preview Split */}
-        <div className="flex-1 overflow-hidden flex">
-          {/* Editor Input */}
-          <div className="w-1/2 flex flex-col border-r border-white/5 bg-black/40">
-            <div className="px-10 py-6 border-b border-white/5 flex justify-between items-center bg-white/[0.02]">
-               <span className="text-[10px] font-black uppercase tracking-[0.3em] text-accent flex items-center gap-2">
-                 <FileText className="h-3 w-3" /> Raw Markdown Terminal
-               </span>
-               <span className="text-[10px] text-muted-foreground font-mono bg-white/5 px-3 py-1 rounded-full">
-                 WORDS_COUNT: {activeChunk?.content.split(/\s+/).filter(s => s).length || 0}
-               </span>
-            </div>
-            <textarea
-              className="flex-1 px-10 py-8 outline-none resize-none font-mono text-base leading-relaxed bg-black/20 text-accent/80 selection:bg-accent selection:text-black placeholder:text-white/5"
-              placeholder="// Inicie la transcripción académica aquí o ejecute la IA..."
-              value={activeChunk?.content || ""}
-              onChange={(e) => handleUpdateContent(e.target.value)}
-            />
-          </div>
-
-          {/* Rendered Preview */}
-          <div className="w-1/2 flex flex-col bg-slate-900/10">
-            <div className="px-10 py-6 border-b border-white/5 flex justify-between items-center bg-white/[0.02]">
-               <span className="text-[10px] font-black uppercase tracking-[0.3em] text-blue-400 flex items-center gap-2">
-                 <History className="h-3 w-3" /> Output Académico Refinado
-               </span>
-               <div className="flex gap-1">
-                 {[1,2,3].map(i => <div key={i} className="h-1.5 w-1.5 rounded-full bg-white/10" />)}
-               </div>
-            </div>
-            <div className="flex-1 p-12 overflow-y-auto prose prose-invert max-w-none prose-headings:font-serif prose-headings:italic prose-headings:tracking-tighter prose-p:serif prose-p:italic prose-p:text-lg prose-p:leading-relaxed prose-p:text-white/90">
-               {activeChunk?.content ? (
-                 <div className="markdown-body">
-                   <ReactMarkdown>{activeChunk.content}</ReactMarkdown>
-                 </div>
-               ) : (
-                 <div className="h-full flex flex-col items-center justify-center text-center opacity-10 italic serif grayscale pointer-events-none">
-                   <BookMarked className="h-32 w-32 mb-8" />
-                   <p className="text-xl">Esperando flujo de datos...</p>
-                 </div>
-               )}
-            </div>
-          </div>
-        </div>
-      </main>
-
-      {/* Right Panel - Research & Context */}
-      <motion.aside
-        initial={false}
-        animate={{ width: rightPanel !== "none" ? 380 : 0, opacity: rightPanel !== "none" ? 1 : 0 }}
-        className="bg-black/50 border-l border-white/5 z-20 flex flex-col backdrop-blur-3xl"
-      >
-        <div className="flex border-b border-white/5 bg-white/5">
-           <button 
-             onClick={() => setRightPanel("research")}
-             className={cn("flex-1 py-6 text-[10px] font-black uppercase tracking-[0.2em] transition-all", rightPanel === "research" ? "text-accent border-b border-accent" : "text-white/20 hover:text-white/40")}
-           >
-             Fuentes
-           </button>
-           <button 
-             onClick={() => setRightPanel("config")}
-             className={cn("flex-1 py-6 text-[10px] font-black uppercase tracking-[0.2em] transition-all", rightPanel === "config" ? "text-accent border-b border-accent" : "text-white/20 hover:text-white/40")}
-           >
-             Núcleo
-           </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
-          <AnimatePresence mode="wait">
-            {rightPanel === "research" && (
-              <motion.div
-                key="research"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                className="space-y-8"
-              >
-                <CitationManager 
-                  onAddCitation={handleAddCitation} 
-                  existingCitations={project.validatedCitations} 
-                />
-              </motion.div>
-            )}
-            {rightPanel === "config" && (
-              <motion.div
-                key="config"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                className="space-y-10"
-              >
-                <div className="space-y-6">
-                   <h3 className="text-[10px] font-black uppercase tracking-[0.4em] text-accent flex items-center gap-2">
-                     <Database className="h-4 w-4" /> Hypothesys_Core
-                   </h3>
-                   <div className="p-8 glass rounded-[2rem] space-y-6">
-                      <div className="space-y-2">
-                        <label className="text-[9px] font-black uppercase tracking-widest text-white/30 block">Script de Hipótesis</label>
-                        <textarea 
-                          value={project.hypothesis}
-                          onChange={(e) => {
-                            const updated = { ...project, hypothesis: e.target.value };
-                            setProject(updated);
-                            projectService.saveProject(updated);
-                          }}
-                          className="w-full text-xs p-4 rounded-xl bg-white/5 border border-white/10 text-white font-mono focus:ring-1 focus:ring-accent transition-all h-32 resize-none placeholder:text-white/5" 
-                          placeholder="Protocolo de investigación..."
-                        />
-                      </div>
-                      <div className="space-y-4">
-                        <label className="text-[9px] font-black uppercase tracking-widest text-white/30 block">Vectores de Búsqueda</label>
-                        <div className="flex flex-wrap gap-2">
-                          {project.variables.map((v, i) => (
-                             <span key={i} className="px-3 py-1.5 bg-accent/10 border border-accent/20 rounded-lg text-[10px] flex items-center gap-2 font-mono text-accent">
-                               {v} <button onClick={() => {
-                                 const updated = { ...project, variables: project.variables.filter((_, idx) => idx !== i) };
-                                 setProject(updated);
-                                 projectService.saveProject(updated);
-                               }} className="hover:text-white"><Trash2 className="h-3 w-3" /></button>
-                             </span>
-                          ))}
-                          <button 
-                            onClick={() => {
-                              const v = prompt("Añadir variable:");
-                              if (v) {
-                                const updated = { ...project, variables: [...project.variables, v] };
-                                setProject(updated);
-                                projectService.saveProject(updated);
-                              }
-                            }}
-                            className="h-8 w-8 bg-white text-black rounded-lg flex items-center justify-center hover:bg-accent transition-colors"
-                          >
-                             <Plus className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
+             <header className="px-6 sm:px-10 lg:px-16 py-8 sm:py-12 border-b border-white/5 flex flex-col sm:flex-row sm:items-center justify-between sticky top-0 bg-gray-900/80 backdrop-blur-3xl z-40 rounded-t-[2rem] sm:rounded-t-[3.5rem] gap-6">
+                <div className="space-y-4">
+                   <div className="flex items-center gap-3">
+                      <span className="text-[10px] font-black text-brand-blue uppercase tracking-[0.4em] px-4 py-1.5 bg-brand-blue/10 rounded-full border border-brand-blue/20">NODE-STATE {(activeChapter + 1).toString().padStart(2, '0')}</span>
+                      {activeChunk.status === "completed" && <div className="flex items-center gap-1.5 px-3 py-1 bg-green-500/10 border border-green-500/20 rounded-full text-[9px] font-black text-green-500 uppercase tracking-widest leading-none">VERIFICADO</div>}
+                   </div>
+                   <h2 className="text-2xl sm:text-4xl lg:text-5xl font-display font-bold text-white tracking-tighter leading-tight">{activeChunk.chapter}</h2>
+                   <div className="flex items-center gap-4 sm:gap-6 text-[9px] sm:text-[10px] text-white/30 uppercase font-black tracking-widest">
+                      <span className="flex items-center gap-2"><Clock className="w-3.5 h-3.5 text-brand-blue" /> {activeChunk.content?.split(" ").length || 0} WORD-TOKENS</span>
+                      <div className="w-1.5 h-1.5 bg-white/10 rounded-full" />
+                      <span className="flex items-center gap-2"><BookCheck className="w-3.5 h-3.5 text-brand-indigo" /> PROTOCOLO {project.citationStyle}</span>
                    </div>
                 </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </motion.aside>
+                <div className="flex items-center gap-3 sm:gap-4">
+                   {isSaving && <div className="hidden sm:flex items-center gap-2 text-[10px] font-black text-brand-blue animate-pulse"><Loader2 className="w-4 h-4 animate-spin" /> SYNCING</div>}
+                   <button 
+                    onClick={() => setShowSettings(true)}
+                    className="w-12 h-12 flex items-center justify-center text-white/50 hover:text-white hover:bg-white/10 rounded-2xl transition-all border border-white/5 hover:border-white/10 group bg-white/5 backdrop-blur-xl shadow-inner"
+                   >
+                      <Settings className="w-5 h-5 group-hover:rotate-180 transition-transform duration-700" />
+                   </button>
+                   <button className="w-12 h-12 flex items-center justify-center text-white/50 hover:text-green-400 hover:bg-green-400/10 rounded-2xl transition-all border border-white/5 hover:border-green-400/20 group bg-white/5 backdrop-blur-xl shadow-inner">
+                      <Save className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                   </button>
+                </div>
+             </header>
 
-      {/* Floating Toggle for Right Panel */}
-      {rightPanel === "none" && (
-        <button 
-          onClick={() => setRightPanel("research")}
-          className="fixed right-10 bottom-10 p-5 bg-white text-black rounded-full shadow-[0_0_30px_rgba(255,255,255,0.2)] hover:scale-110 active:scale-95 transition-all z-50 group"
-        >
-          <Settings2 className="h-7 w-7 group-hover:rotate-90 transition-transform" />
-        </button>
-      )}
+             <article className="p-8 sm:p-12 lg:p-24 max-w-5xl mx-auto w-full selection:bg-brand-blue selection:text-white relative z-10">
+                {activeChunk.content ? (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="markdown-body dark-mode"
+                  >
+                    <ReactMarkdown>{activeChunk.content}</ReactMarkdown>
+                  </motion.div>
+                ) : (
+                  <div className="h-[600px] flex flex-col items-center justify-center text-center space-y-10 select-none">
+                     <div className="relative group">
+                        <div className="absolute -inset-8 bg-brand-blue/20 blur-[60px] rounded-full opacity-50 group-hover:opacity-100 transition-opacity duration-1000" />
+                        <div className="w-32 h-32 bg-white/5 rounded-full flex items-center justify-center border border-white/10 backdrop-blur-3xl relative z-10 shadow-2xl">
+                           <MessageSquare className="w-12 h-12 text-white/20 stroke-[1px] group-hover:text-brand-blue transition-colors duration-700" />
+                        </div>
+                        <div className="absolute -top-4 -right-4 w-12 h-12 bg-brand-blue rounded-2xl flex items-center justify-center shadow-[0_0_20px_rgba(59,130,246,0.5)] border border-white/20 animate-float relative z-20">
+                           <Sparkles className="w-6 h-6 text-white" />
+                        </div>
+                     </div>
+                     <div className="space-y-6 max-w-sm relative z-10">
+                       <p className="text-3xl italic font-serif text-white/20 tracking-tighter leading-tight group-hover:text-white/40 transition-colors">"La arquitectura del conocimiento comienza en el vacío."</p>
+                       <div className="inline-flex items-center gap-3 px-6 py-2 bg-white/5 border border-white/5 rounded-full backdrop-blur-md">
+                          <div className="w-1.5 h-1.5 bg-brand-blue rounded-full animate-ping" />
+                          <p className="text-[9px] uppercase tracking-[0.4em] font-black text-white/40">Base de datos en espera</p>
+                       </div>
+                     </div>
+                     {!isOrchestrating && (
+                       <motion.button 
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={runFullGeneration}
+                        className="px-12 py-6 bg-white text-gray-900 rounded-3xl font-black text-[10px] tracking-[0.3em] uppercase shadow-[0_20px_40px_-10px_rgba(255,255,255,0.2)] hover:bg-brand-blue hover:text-white transition-all relative overflow-hidden group"
+                       >
+                         <span className="relative z-10">Activar IA Core</span>
+                         <div className="absolute inset-0 bg-brand-blue translate-y-full group-hover:translate-y-0 transition-transform duration-500" />
+                       </motion.button>
+                     )}
+                  </div>
+                )}
+             </article>
+
+             {/* Footer with academic sign-off */}
+             <footer className="mt-auto px-6 sm:px-10 lg:px-16 py-8 border-t border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-6 bg-gray-950/50 backdrop-blur-md">
+                <div className="flex items-center gap-4">
+                   <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full bg-brand-blue shadow-[0_0_8px_rgba(59,130,246,0.8)]" />
+                      <div className="w-[1px] h-4 bg-white/10 mx-2" />
+                      <span className="text-[10px] font-black uppercase text-white/30 tracking-[0.4em]">Integrated Scientific OS v2.5</span>
+                   </div>
+                </div>
+                <div className="flex items-center gap-6">
+                   <span className="text-[9px] font-bold text-white/20 italic tracking-widest">Protocolo de Red Eléctrica: {project.university} </span>
+                   <div className="flex gap-1.5">
+                      {[1,2,3].map(i => <div key={i} className="w-1 h-3 bg-white/5 rounded-full" />)}
+                   </div>
+                </div>
+             </footer>
+          </motion.div>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showSettings && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-gray-950/80 backdrop-blur-md z-[100] flex items-center justify-center p-4 sm:p-6"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="bg-gray-900 border border-white/10 w-full max-w-2xl rounded-[3rem] overflow-hidden shadow-2xl"
+            >
+              <div className="px-10 py-10 border-b border-white/5 flex items-center justify-between">
+                <div>
+                  <h3 className="text-2xl font-bold text-white tracking-tight">Parámetros de Investigación</h3>
+                  <p className="text-white/40 text-xs uppercase tracking-widest mt-1 font-black">Configuración avanzada de la IA</p>
+                </div>
+                <button 
+                  onClick={() => setShowSettings(false)}
+                  className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all"
+                >
+                  <ChevronLeft className="w-5 h-5 rotate-180" />
+                </button>
+              </div>
+
+              <div className="p-10 space-y-8">
+                <div className="space-y-4">
+                  <label className="text-[10px] font-black text-brand-blue uppercase tracking-[0.3em]">Mimetismo de Estilo (Tu Voz)</label>
+                  <textarea 
+                    placeholder="Pega aquí un fragmento de texto redactado por ti para que la IA aprenda tu estilo, vocabulario y tono..."
+                    className="w-full h-32 bg-white/5 border border-white/10 rounded-3xl p-5 text-white/80 text-sm focus:border-brand-blue focus:ring-1 focus:ring-brand-blue outline-none transition-all resize-none"
+                    value={project.userVoice || ""}
+                    onChange={(e) => handleUpdateProject({ userVoice: e.target.value })}
+                  />
+                  <p className="text-[10px] text-white/30 italic">La IA analizará este texto para evitar sonar robótica.</p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
+                   <div className="space-y-4">
+                      <label className="text-[10px] font-black text-brand-blue uppercase tracking-[0.3em]">Protocolo de Citación</label>
+                      <select 
+                        className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white/80 text-sm outline-none focus:border-brand-blue"
+                        value={project.citationStyle}
+                        onChange={(e) => handleUpdateProject({ citationStyle: e.target.value as any })}
+                      >
+                         <option value="APA">APA 7ma Edición</option>
+                         <option value="Vancouver">Vancouver</option>
+                      </select>
+                   </div>
+                   <div className="space-y-4">
+                      <label className="text-[10px] font-black text-brand-blue uppercase tracking-[0.3em]">Meta-Manual de Univ.</label>
+                      <select 
+                        className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white/80 text-sm outline-none focus:border-brand-blue"
+                        value={project.university}
+                        onChange={(e) => handleUpdateProject({ university: e.target.value as any })}
+                      >
+                         <option value="IUTA">IUTA</option>
+                         <option value="IUTAR">IUTAR</option>
+                         <option value="UPTAEB">UPTAEB</option>
+                      </select>
+                   </div>
+                </div>
+              </div>
+
+              <div className="p-10 bg-white/5 border-t border-white/5 flex justify-end">
+                 <button 
+                  onClick={() => setShowSettings(false)}
+                  className="px-10 py-5 bg-white text-gray-900 rounded-3xl font-black text-[10px] tracking-[0.3em] uppercase hover:bg-brand-blue hover:text-white transition-all shadow-xl shadow-brand-blue/10"
+                 >
+                   Guardar y Cerrar
+                 </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
-}
+};
+
+export default ProjectPage;

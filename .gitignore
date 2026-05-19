@@ -1,8 +1,11 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
+# Dependencies
+node_modules
+dist
+.vercel
+
+# Local envs
+.env
+.env.local
+
+# Build info
+tsconfig.tsbuildinfo

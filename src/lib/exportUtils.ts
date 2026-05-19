@@ -1,7 +1,6 @@
 import { ThesisProject, THESIS_CHAPTERS, CitationMetadata } from "../types";
 import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel, PageBreak, Header, PageNumber, NumberFormat, SectionType } from "docx";
 
-// Standard values for many Venezuelan technical institutes (IUTA, IUTAR, UPTAEB)
 const MARGIN_LEFT = 2268;   // 4cm
 const MARGIN_TOP = 1700;    // 3cm
 const MARGIN_RIGHT = 1700;  // 3cm
@@ -11,172 +10,90 @@ const FONT_BODY = "Times New Roman";
 const SIZE_BODY = 24; // 12pt
 
 export async function generateWordDoc(project: ThesisProject): Promise<Blob> {
-  const sortedChapters = [...THESIS_CHAPTERS];
-  const sortedChunks = [...project.chunks].sort((a, b) => {
-    const indexA = sortedChapters.indexOf(a.chapter);
-    const indexB = sortedChapters.indexOf(b.chapter);
-    return (indexA === -1 ? 999 : indexA) - (indexB === -1 ? 999 : indexB);
-  });
-
   const prelims: Paragraph[] = [];
   const bodySections: Paragraph[] = [];
 
-  // 1. CARATULA / PORTADA
+  // Title Page
   prelims.push(
     new Paragraph({
       alignment: AlignmentType.CENTER,
       children: [
         new TextRun({ text: "REPUBLICA BOLIVARIANA DE VENEZUELA", bold: true, font: FONT_BODY, size: SIZE_BODY }),
-        new TextRun({ break: 1, text: "MINISTERIO DEL PODER POPULAR PARA LA EDUCACIÓN UNIVERSITARIA", bold: true, font: FONT_BODY, size: SIZE_BODY - 4 }),
-        new TextRun({ break: 1, text: "INSTITUTO UNIVERSITARIO DE TECNOLOGÍA", bold: true, font: FONT_BODY, size: SIZE_BODY - 2 }),
+        new TextRun({ break: 1, text: project.university === "UPTAEB" ? "UNIVERSIDAD POLITÉCNICA TERRITORIAL \"ANDRÉS ELOY BLANCO\"" : "INSTITUTO UNIVERSITARIO DE TECNOLOGÍA", bold: true, font: FONT_BODY, size: SIZE_BODY - 2 }),
       ]
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
-      spacing: { before: 2000, after: 1000 },
-      children: [
-        new TextRun({ 
-          text: project.title.toUpperCase(), 
-          bold: true, 
-          font: FONT_BODY, 
-          size: SIZE_BODY + 2
-        })
-      ]
+      spacing: { before: 2400, after: 1200 },
+      children: [new TextRun({ text: project.title.toUpperCase(), bold: true, font: FONT_BODY, size: SIZE_BODY + 4 })]
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
-      spacing: { after: 2000 },
-      children: [
-        new TextRun({ 
-          text: "Trabajo Especial de Grado presentado como requisito para optar al título correspondiente", 
-          font: FONT_BODY, 
-          size: SIZE_BODY - 2 
-        })
-      ]
+      spacing: { after: 1200 },
+      children: [new TextRun({ text: "Trabajo Especial de Grado para optar al título correspondiente", font: FONT_BODY, size: SIZE_BODY })]
     }),
     new Paragraph({
       alignment: AlignmentType.RIGHT,
+      spacing: { before: 2400 },
       children: [
         new TextRun({ text: "Autor: [NOMBRE DEL ESTUDIANTE]", font: FONT_BODY, size: SIZE_BODY }),
         new TextRun({ break: 1, text: "Tutor: [NOMBRE DEL TUTOR]", font: FONT_BODY, size: SIZE_BODY }),
       ]
     }),
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { before: 2000 },
-      children: [
-        new TextRun({ text: `Maracay, ${new Date().toLocaleDateString("es-VE", { month: 'long', year: 'numeric' })}`, font: FONT_BODY, size: SIZE_BODY })
-      ]
-    }),
     new Paragraph({ children: [new PageBreak()] })
   );
 
-  // 2. RESUMEN
-  const summaryChunk = project.chunks.find(c => c.chapter === "Resumen");
-  if (summaryChunk) {
-    prelims.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { before: 400, after: 400 },
-        children: [new TextRun({ text: "RESUMEN", bold: true, font: FONT_BODY, size: SIZE_BODY })]
-      }),
-      new Paragraph({
-        alignment: AlignmentType.JUSTIFIED,
-        spacing: { line: 240 }, // Simple space for summary
-        children: [
-          new TextRun({ 
-            text: summaryChunk.content.replace(/\n/g, " "), // Continuous text
-            font: FONT_BODY, 
-            size: SIZE_BODY 
-          })
-        ]
-      }),
-      new Paragraph({
-        spacing: { before: 400 },
-        children: [
-          new TextRun({ text: "Descriptores: ", bold: true, font: FONT_BODY, size: SIZE_BODY }),
-          new TextRun({ text: project.title.split(" ").slice(0, 5).join(", "), font: FONT_BODY, size: SIZE_BODY })
-        ]
-      }),
-      new Paragraph({ children: [new PageBreak()] })
-    );
-  }
-
-  // 3. CAPITULOS
-  sortedChunks.forEach((chunk) => {
-    if (chunk.chapter === "Resumen") return;
-    if (!chunk.content || chunk.content.trim().length < 10) return;
-
-    // Chapter Header
+  // Chapters
+  project.chunks.forEach((chunk, idx) => {
+    if (!chunk.content || chunk.content.trim().length === 0) return;
+    
     bodySections.push(
       new Paragraph({
         alignment: AlignmentType.CENTER,
-        spacing: { before: 400, after: 200 },
+        spacing: { before: 400, after: 400 },
         children: [
-          new TextRun({ text: `CAPÍTULO ${toRoman(getChapterNumber(chunk.chapter))}`, bold: true, font: FONT_BODY, size: SIZE_BODY }),
-          new TextRun({ break: 1, text: chunk.chapter.toUpperCase(), bold: true, font: FONT_BODY, size: SIZE_BODY }),
+          new TextRun({ text: `CAPÍTULO ${idx + 1}`, bold: true, font: FONT_BODY, size: 28 }),
+          new TextRun({ break: 1, text: chunk.chapter.toUpperCase(), bold: true, font: FONT_BODY, size: 28 })
         ]
       })
     );
 
-    // Chapter Content
-    const paragraphs = chunk.content.split(/\n\s*\n/);
-    paragraphs.forEach(pText => {
-      if (pText.trim()) {
+    chunk.content.split(/\n\s*\n/).forEach(p => {
+      if (p.trim()) {
         bodySections.push(
           new Paragraph({
             alignment: AlignmentType.JUSTIFIED,
-            spacing: { line: 360, before: 120, after: 120 }, // 1.5 space
+            spacing: { line: 360, before: 120, after: 120 }, // 1.5 line height
             indent: { firstLine: 567 }, // 1cm indent
-            children: [
-              new TextRun({ 
-                text: pText.trim().replace(/\n/g, " "), 
-                font: FONT_BODY, 
-                size: SIZE_BODY 
-              })
-            ]
+            children: [new TextRun({ text: p.replace(/\n/g, " ").trim(), font: FONT_BODY, size: SIZE_BODY })]
           })
         );
       }
     });
-
     bodySections.push(new Paragraph({ children: [new PageBreak()] }));
   });
 
-  // 4. BIBLIOGRAFIA
-  bodySections.push(
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { before: 400, after: 400 },
-      children: [new TextRun({ text: "REFERENCIAS BIBLIOGRÁFICAS", bold: true, font: FONT_BODY, size: SIZE_BODY })]
-    })
-  );
-
+  // Bibliography
   if (project.validatedCitations.length > 0) {
+    bodySections.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 400, after: 400 },
+        children: [new TextRun({ text: "REFERENCIAS BIBLIOGRÁFICAS", bold: true, font: FONT_BODY, size: 28 })]
+      })
+    );
+
     project.validatedCitations.forEach(c => {
       bodySections.push(
         new Paragraph({
           alignment: AlignmentType.LEFT,
-          spacing: { line: 240, before: 60, after: 60 },
-          indent: { hanging: 567 }, // Hanging indent for references
+          spacing: { line: 240, before: 120 },
+          indent: { hanging: 567 },
           children: [
-            new TextRun({
-              text: `${c.authors.join(", ")} (${c.year}). `,
-              font: FONT_BODY,
-              size: SIZE_BODY,
-            }),
-            new TextRun({
-              text: c.title,
-              font: FONT_BODY,
-              size: SIZE_BODY,
-              italics: true
-            }),
-            new TextRun({
-              text: `. ${c.journal || ""}${c.doi ? `. DOI: ${c.doi}` : ""}`,
-              font: FONT_BODY,
-              size: SIZE_BODY,
-            })
-          ],
+            new TextRun({ text: `${c.authors.join(", ")} (${c.year}). `, font: FONT_BODY, size: SIZE_BODY }),
+            new TextRun({ text: c.title, font: FONT_BODY, size: SIZE_BODY, italics: true }),
+            new TextRun({ text: `. ${c.journal || ""}${c.doi ? `. DOI: ${c.doi}` : ""}`, font: FONT_BODY, size: SIZE_BODY })
+          ]
         })
       );
     });
@@ -184,91 +101,48 @@ export async function generateWordDoc(project: ThesisProject): Promise<Blob> {
 
   const doc = new Document({
     sections: [
-      {
-        properties: {
-          page: {
+      { 
+        properties: { 
+          page: { 
             margin: { top: MARGIN_TOP, right: MARGIN_RIGHT, bottom: MARGIN_BOTTOM, left: MARGIN_LEFT },
-            pageNumbers: {
-              start: 1,
-              format: NumberFormat.LOWER_ROMAN
-            }
+            pageNumbers: { start: 1, formatType: NumberFormat.LOWER_ROMAN }
           },
-        },
-        children: prelims,
+        }, 
+        children: prelims 
       },
-      {
-        properties: {
-          page: {
+      { 
+        properties: { 
+          page: { 
             margin: { top: MARGIN_TOP, right: MARGIN_RIGHT, bottom: MARGIN_BOTTOM, left: MARGIN_LEFT },
-            pageNumbers: {
-              start: 1,
-              format: NumberFormat.DECIMAL
-            }
-          },
+            pageNumbers: { start: 1, formatType: NumberFormat.DECIMAL }
+          }, 
           type: SectionType.NEXT_PAGE,
-        },
+        }, 
         headers: {
           default: new Header({
             children: [
               new Paragraph({
                 alignment: AlignmentType.RIGHT,
-                children: [
-                  new TextRun({
-                    children: [PageNumber.CURRENT],
-                    font: FONT_BODY,
-                    size: 20,
-                  }),
-                ],
-              }),
-            ],
-          }),
+                children: [new TextRun({ children: [PageNumber.CURRENT], font: FONT_BODY, size: 20 })]
+              })
+            ]
+          })
         },
-        children: bodySections,
+        children: bodySections 
       }
-    ],
+    ]
   });
 
   return Packer.toBlob(doc);
-}
-
-function toRoman(num: number): string {
-  if (num <= 0) return "";
-  const lookup: { [key: string]: number } = { M: 1000, CM: 900, D: 500, CD: 400, C: 100, XC: 90, L: 50, XL: 40, X: 10, IX: 9, V: 5, IV: 4, I: 1 };
-  let roman = "";
-  for (let i in lookup) {
-    while (num >= lookup[i]) {
-      roman += i;
-      num -= lookup[i];
-    }
-  }
-  return roman;
-}
-
-function getChapterNumber(chapter: string): number {
-  if (chapter.includes("Introducción")) return 0;
-  if (chapter.includes("Problema")) return 1;
-  if (chapter.includes("Teórico")) return 2;
-  if (chapter.includes("Metodol")) return 3;
-  if (chapter.includes("Resultados")) return 4;
-  if (chapter.includes("Discusión")) return 5;
-  if (chapter.includes("Conclusiones")) return 6;
-  return 99;
 }
 
 export function exportToMarkdown(project: ThesisProject): string {
   let md = `# ${project.title.toUpperCase()}\n\n`;
   md += `**Trabajo de Grado presentado como requisito para optar al título correspondiente**\n\n`;
   md += `---\n\n`;
-  md += `## RESUMEN E HIPÓTESIS\n\n**Hipótesis:** ${project.hypothesis}\n\n`;
+  md += `## HIPÓTESIS: ${project.hypothesis}\n\n`;
   
-  const sortedChapters = [...THESIS_CHAPTERS];
-  const sortedChunks = [...project.chunks].sort((a, b) => {
-    const indexA = sortedChapters.indexOf(a.chapter);
-    const indexB = sortedChapters.indexOf(b.chapter);
-    return (indexA === -1 ? 999 : indexA) - (indexB === -1 ? 999 : indexB);
-  });
-
-  sortedChunks.forEach(chunk => {
+  project.chunks.forEach(chunk => {
     if (chunk.content && chunk.content.trim().length > 0) {
       md += `\n# ${chunk.chapter.toUpperCase()}\n\n${chunk.content}\n\n`;
       md += `\n---\n`;
@@ -276,26 +150,22 @@ export function exportToMarkdown(project: ThesisProject): string {
   });
 
   md += `\n# REFERENCIAS BIBLIOGRÁFICAS\n\n`;
-  if (project.validatedCitations.length > 0) {
-    project.validatedCitations.forEach(c => {
-      md += `- ${c.authors.join(", ")} (${c.year}). *${c.title}*. ${c.journal || ""}${c.doi ? `. DOI: ${c.doi}` : ""}\n`;
-    });
-  } else {
-    md += `(Pendiente de validación de fuentes)\n`;
-  }
+  project.validatedCitations.forEach(c => {
+    md += `- ${c.authors.join(", ")} (${c.year}). *${c.title}*. ${c.journal || ""}\n`;
+  });
+
   return md;
 }
 
-export function exportToBibTeX(project: ThesisProject): string {
-  return project.validatedCitations.map((c, i) => {
-    const id = c.authors[0]?.split(" ")[0]?.toLowerCase() + (c.year || i);
-    return `@article{${id},
+export function exportToBibTeX(citations: CitationMetadata[]): string {
+  return citations.map(c => {
+    const id = (c.authors[0]?.split(" ").pop() || "source") + c.year;
+    return `@article{${id.toLowerCase()},
   author = {${c.authors.join(" and ")}},
   title = {${c.title}},
+  journal = {${c.journal || ""}},
   year = {${c.year}},
-  journal = {${c.journal || "Unknown"}},
-  doi = {${c.doi || ""}},
-  url = {${c.url || ""}}
+  doi = {${c.doi || ""}}
 }`;
   }).join("\n\n");
 }
@@ -304,8 +174,6 @@ export function downloadFile(content: string, filename: string, type: string) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
+  a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }

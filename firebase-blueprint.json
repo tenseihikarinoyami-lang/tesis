@@ -1,79 +1,30 @@
 {
   "entities": {
-    "User": {
-      "title": "User Profile",
-      "description": "User account and settings",
+    "AppUser": {
+      "title": "App User",
+      "description": "Metadata for application users including roles and expiration",
       "type": "object",
       "properties": {
         "uid": { "type": "string" },
         "email": { "type": "string" },
-        "role": { "type": "string", "enum": ["student", "admin"] },
-        "subscription": { "type": "string", "enum": ["free", "pro"] },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "displayName": { "type": "string" },
+        "password": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "researcher"] },
+        "expiresAt": { "type": "number" },
+        "createdAt": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "expired", "pending"] }
       },
       "required": ["uid", "email", "role"]
-    },
-    "Project": {
-      "title": "Thesis Project",
-      "description": "Main thesis document metadata",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string" },
-        "userId": { "type": "string" },
-        "title": { "type": "string" },
-        "description": { "type": "string" },
-        "hypothesis": { "type": "string" },
-        "variables": { "type": "array", "items": { "type": "string" } },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["id", "userId", "title"]
-    },
-    "Chunk": {
-      "title": "Document Chunk",
-      "description": "A chapter or section of the thesis",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string" },
-        "chapter": { "type": "string" },
-        "title": { "type": "string" },
-        "content": { "type": "string" },
-        "status": { "type": "string", "enum": ["draft", "generated", "reviewed"] },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["id", "chapter", "content"]
-    },
-    "Citation": {
-      "title": "Academic Citation",
-      "description": "Validated reference from Crossref/Semantic Scholar",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string" },
-        "doi": { "type": "string" },
-        "title": { "type": "string" },
-        "authors": { "type": "array", "items": { "type": "string" } },
-        "year": { "type": "number" },
-        "url": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
-      }
     }
   },
   "firestore": {
-    "/users/{userId}": {
-      "schema": "User",
-      "description": "User-specific data"
+    "users": {
+      "schema": "AppUser",
+      "description": "User permissions and expiration tracking"
     },
-    "/projects/{projectId}": {
-      "schema": "Project",
-      "description": "Main project container"
-    },
-    "/projects/{projectId}/chunks/{chunkId}": {
-      "schema": "Chunk",
-      "description": "Chapters of a project"
-    },
-    "/projects/{projectId}/citations/{citationId}": {
-      "schema": "Citation",
-      "description": "Citations for a project"
+    "thesis_projects": {
+      "schema": "ThesisProject",
+      "description": "Main collection for thesis documents"
     }
   }
 }

@@ -1,158 +1,93 @@
 import { 
   collection, 
   doc, 
-  getDocs, 
-  getDoc, 
   setDoc, 
-  updateDoc, 
-  deleteDoc, 
+  getDoc, 
+  getDocs, 
   query, 
   where, 
   orderBy,
-  onSnapshot
+  deleteDoc,
+  updateDoc 
 } from "firebase/firestore";
-import { db, auth } from "../lib/firebase";
-import { ThesisProject, ThesisChunk, CitationMetadata, ProjectGenerationStatus } from "../types";
+import { db, handleFirestoreError, OperationType } from "../lib/firebase";
+import { ThesisProject, THESIS_CHAPTERS, ProjectGenerationStatus } from "../types";
 
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-  }
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-    },
-    operationType,
-    path
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
+const COLLECTION_NAME = "thesis_projects";
 
 export const projectService = {
-  getProjects: async (userId: string): Promise<ThesisProject[]> => {
-    const path = "projects";
+  async getAllProjects(userId: string): Promise<ThesisProject[]> {
     try {
       const q = query(
-        collection(db, path), 
+        collection(db, COLLECTION_NAME),
         where("userId", "==", userId),
         orderBy("updatedAt", "desc")
       );
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => doc.data() as ThesisProject);
     } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, path);
-      return [];
+      handleFirestoreError(error, OperationType.LIST, COLLECTION_NAME);
+      return []; // Never reached due to throw in handler
     }
   },
 
-  getProject: async (id: string): Promise<ThesisProject | undefined> => {
-    const path = `projects/${id}`;
+  async getProject(id: string): Promise<ThesisProject | null> {
     try {
-      const docSnap = await getDoc(doc(db, "projects", id));
-      if (!docSnap.exists()) return undefined;
-      
-      const project = docSnap.data() as ThesisProject;
-      
-      // Load chunks and citations
-      const chunksSnap = await getDocs(collection(db, "projects", id, "chunks"));
-      const citationsSnap = await getDocs(collection(db, "projects", id, "citations"));
-      
-      return {
-        ...project,
-        chunks: chunksSnap.docs.map(d => d.data() as ThesisChunk),
-        validatedCitations: citationsSnap.docs.map(d => d.data() as CitationMetadata)
-      };
+      const docRef = doc(db, COLLECTION_NAME, id);
+      const docSnap = await getDoc(docRef);
+      if (!docSnap.exists()) return null;
+      return docSnap.data() as ThesisProject;
     } catch (error) {
-      handleFirestoreError(error, OperationType.GET, path);
+      handleFirestoreError(error, OperationType.GET, `${COLLECTION_NAME}/${id}`);
+      return null;
     }
   },
 
-  saveProject: async (project: ThesisProject) => {
-    const path = `projects/${project.id}`;
-    try {
-      const { chunks, validatedCitations, ...meta } = project;
-      await setDoc(doc(db, "projects", project.id), {
-        ...meta,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-      return project;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
-  },
-
-  saveChunk: async (projectId: string, chunk: ThesisChunk) => {
-    const path = `projects/${projectId}/chunks/${chunk.id}`;
-    try {
-      await setDoc(doc(db, "projects", projectId, "chunks", chunk.id), {
-        ...chunk,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
-  },
-
-  saveCitation: async (projectId: string, citation: CitationMetadata) => {
-    const path = `projects/${projectId}/citations/${citation.doi.replace(/\//g, '_')}`;
-    try {
-      const id = citation.doi.replace(/\//g, '_');
-      await setDoc(doc(db, "projects", projectId, "citations", id), {
-        ...citation,
-        id,
-        createdAt: new Date().toISOString()
-      }, { merge: true });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
-  },
-
-  deleteProject: async (id: string) => {
-    const path = `projects/${id}`;
-    try {
-      await deleteDoc(doc(db, "projects", id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, path);
-    }
-  },
-
-  createProject: async (userId: string, title: string, description: string): Promise<ThesisProject> => {
-    const id = crypto.randomUUID();
+  async createProject(userId: string, data: Partial<ThesisProject>): Promise<ThesisProject> {
+    const id = Date.now().toString();
     const newProject: ThesisProject = {
       id,
       userId,
-      title,
-      description,
-      hypothesis: "",
-      variables: [],
-      chunks: [],
+      title: data.title || "Sin título",
+      hypothesis: data.hypothesis || "",
+      topic: data.topic || "",
+      category: data.category || "General",
+      university: data.university || "IUTA",
+      citationStyle: "APA",
+      chunks: THESIS_CHAPTERS.map(ch => ({ chapter: ch, content: "", status: "pending" })),
       validatedCitations: [],
       generationStatus: ProjectGenerationStatus.IDLE,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...(data as any)
     };
-    await projectService.saveProject(newProject);
-    return newProject;
+
+    try {
+      await setDoc(doc(db, COLLECTION_NAME, id), newProject);
+      return newProject;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `${COLLECTION_NAME}/${id}`);
+      throw error;
+    }
+  },
+
+  async updateProject(id: string, updates: Partial<ThesisProject>): Promise<void> {
+    try {
+      const docRef = doc(db, COLLECTION_NAME, id);
+      await updateDoc(docRef, {
+        ...updates,
+        updatedAt: Date.now()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${COLLECTION_NAME}/${id}`);
+    }
+  },
+
+  async deleteProject(id: string): Promise<void> {
+    try {
+      await deleteDoc(doc(db, COLLECTION_NAME, id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `${COLLECTION_NAME}/${id}`);
+    }
   }
 };

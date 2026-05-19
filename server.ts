@@ -1,134 +1,303 @@
 import express from "express";
+import { GoogleGenAI } from "@google/genai";
+import dotenv from "dotenv";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { Groq } from "groq-sdk";
-import dotenv from "dotenv";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import admin from "firebase-admin";
 
 dotenv.config();
 
-const app = express();
-const PORT = 3000;
-
-app.use(express.json());
-
-// Initialize AI clients lazily
-let geminiClient: GoogleGenerativeAI | null = null;
-const getGemini = () => {
-  if (!geminiClient) {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new Error("GEMINI_API_KEY not configured");
-    geminiClient = new GoogleGenerativeAI(key);
-  }
-  return geminiClient;
-};
-
-// API Fallback for AI
-app.post("/api/ai/fallback", async (req, res) => {
-  const { prompt, provider, options } = req.body;
-  const { maxTokens = 4000, temperature = 0.3 } = options || {};
-
+// Initialize Firebase Admin
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
-    if (provider === "gemini") {
-      const client = getGemini();
-      const model = client.getGenerativeModel({ model: "gemini-2.0-flash" });
-      
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return res.json({ content: response.text() || "" });
-    }
-
-    if (provider === "groq") {
-      const groqKey = process.env.GROQ_API_KEY;
-      if (!groqKey) throw new Error("GROQ_API_KEY not configured");
-      
-      const groq = new Groq({ apiKey: groqKey });
-      const completion = await groq.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: maxTokens,
-        temperature: temperature,
-      });
-      return res.json({ content: completion.choices[0]?.message?.content || "" });
-    }
-
-    if (provider === "openrouter") {
-      const orKey = process.env.OPENROUTER_API_KEY;
-      if (!orKey) throw new Error("OPENROUTER_API_KEY not configured");
-
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${orKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "qwen/qwen-2.5-72b-instruct",
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: maxTokens,
-          temperature: temperature,
-        }),
-      });
-      const data = await response.json();
-      return res.json({ content: data.choices?.[0]?.message?.content || "" });
-    }
-
-    res.status(400).json({ error: "Unsupported provider" });
-  } catch (error: any) {
-    console.error("AI Fallback Error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Citation Validation Proxy
-app.get("/api/research/validate", async (req, res) => {
-  const { doi } = req.query;
-  if (!doi) return res.status(400).json({ error: "DOI required" });
-
-  try {
-    const response = await fetch(`https://api.crossref.org/works/${doi}`, {
-      headers: { "User-Agent": "ThesisForge/1.0 (mailto:admin@thesisforge.ai)" },
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
     });
-    
-    if (!response.ok) return res.json({ valid: false });
-    
-    const data = await response.json();
-    const item = data.message;
-    
-    res.json({
-      valid: true,
-      metadata: {
-        title: item.title?.[0],
-        authors: item.author?.map((a: any) => `${a.given} ${a.family}`) || [],
-        year: item["published-print"]?.["date-parts"]?.[0]?.[0] || item["published-online"]?.["date-parts"]?.[0]?.[0],
-        journal: item["container-title"]?.[0],
-        doi: item.DOI,
-        url: item.URL,
-        type: item.type,
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ valid: false, error: "Internal research error" });
+    console.log("Firebase Admin initialized successfully");
+  } catch (e) {
+    console.error("Error parsing FIREBASE_SERVICE_ACCOUNT:", e);
   }
-});
+} else {
+  console.warn("FIREBASE_SERVICE_ACCOUNT not found. Backend orchestration will not be able to update Firestore.");
+}
 
-// Semantic Scholar Search Proxy
-app.get("/api/research/search", async (req, res) => {
-  const { query, limit = 5 } = req.query;
-  if (!query) return res.status(400).json({ error: "Query required" });
-
-  try {
-    const response = await fetch(
-      `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(query as string)}&limit=${limit}&fields=title,authors,year,abstract,citationCount,url`
-    );
-    const data = await response.json();
-    res.json(data.data || []);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to search semantic scholar" });
-  }
-});
+const db = admin.apps.length > 0 ? admin.firestore() : null;
 
 async function startServer() {
+  const app = express();
+  app.use(express.json());
+
+  // Lazy initialization of Gemini client
+  let genAI: GoogleGenAI | null = null;
+
+  function getGenAI() {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY is not defined in the environment.");
+    }
+    if (!genAI) {
+      genAI = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+    }
+    return genAI;
+  }
+
+  // Robust internal AI caller with fallback and retries
+  async function runAI(prompt: string, temperature = 0.3) {
+    const providers = [
+      { 
+        name: "Gemini", 
+        call: async () => {
+          const ai = getGenAI();
+          const attempt = async () => {
+            const response = await ai.models.generateContent({
+              model: "gemini-1.5-flash",
+              contents: prompt,
+              config: { temperature },
+            });
+            return response.text;
+          };
+          try {
+            return await attempt();
+          } catch (e: any) {
+            if (e.message.includes("503") || e.message.includes("demand")) {
+              await new Promise(r => setTimeout(r, 2000));
+              return await attempt();
+            }
+            throw e;
+          }
+        }
+      },
+      {
+        name: "Groq",
+        call: async () => {
+          const apiKey = process.env.GROQ_API_KEY;
+          if (!apiKey) throw new Error("GROQ_API_KEY missing");
+          const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "llama-3.3-70b-versatile",
+              messages: [{ role: "user", content: prompt }],
+              temperature
+            })
+          });
+          if (!resp.ok) throw new Error(`Groq status ${resp.status}`);
+          const data: any = await resp.json();
+          return data.choices[0].message.content;
+        }
+      }
+    ];
+
+    let lastError = null;
+    for (const provider of providers) {
+      try {
+        const content = await provider.call();
+        if (content) return content;
+      } catch (e: any) {
+        lastError = e;
+        console.error(`Provider ${provider.name} failed during background task:`, e.message);
+      }
+    }
+    throw lastError || new Error("All AI providers failed");
+  }
+
+  // Backend Orchestration Endpoint
+  app.post("/api/projects/:id/orchestrate", async (req, res) => {
+    const { id } = req.params;
+    
+    if (!db) {
+      return res.status(500).json({ error: "Firestore not initialized on server" });
+    }
+
+    try {
+      const projectRef = db.collection("thesis_projects").doc(id);
+      const projectDoc = await projectRef.get();
+      
+      if (!projectDoc.exists) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      const project = projectDoc.data();
+      
+      // Start async process (don't await)
+      orchestrateInBackground(id, project);
+
+      res.json({ status: "started", message: "Orchestration process initiated in background" });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  async function orchestrateInBackground(projectId: string, project: any) {
+    if (!db) return;
+    const projectRef = db.collection("thesis_projects").doc(projectId);
+
+    try {
+      // 1. Update status to planning
+      await projectRef.update({ 
+        generationStatus: "planning",
+        updatedAt: Date.now()
+      });
+
+      const chapters = project.chunks;
+      
+      for (let i = 0; i < chapters.length; i++) {
+        const chunk = chapters[i];
+        
+        // Update status for the frontend
+        await projectRef.update({ 
+          generationStatus: "writing",
+          [`chunks.${i}.status`]: "generating",
+          updatedAt: Date.now()
+        });
+
+        // Define Sub-sections for Chunking
+        const subSections = getSubsectionsForChapter(chunk.chapter, project.university);
+        let fullChapterContent = "";
+
+        for (const sub of subSections) {
+          // AGENTIC LOOP: Writing -> Review -> Edit
+          
+          // 1. Writing Agent
+          const writePrompt = `Eres un experto académico de la universidad ${project.university}. 
+          Redacta la sección "${sub}" del "${chunk.chapter}" para una tesis titulada: "${project.title}".
+          Contexto y Alcance: ${project.topic}.
+          ${project.userVoice ? `Estilo de voz del autor (respeta este tono): ${project.userVoice}` : ""}
+          
+          REGLAS:
+          - TERCERA PERSONA IMPERSONAL obligatoria.
+          - Tono formal, técnico de alto nivel académico.
+          - Extensión sugerida para esta sección: 500-800 palabras.
+          - Citas en estilo ${project.citationStyle}.
+          - Si es Marco Teórico, asegúrate de citar autores reales con propiedad.`;
+
+          const rawDraft = await runAI(writePrompt);
+
+          // 2. Reviewer Agent (Validation)
+          const reviewPrompt = `Actúa como un Tutor Académico especializado en metodología ${project.university}. 
+          Evalúa rigurosamente el siguiente texto para la sección "${sub}" de la tesis "${project.title}".
+          
+          TEXTO A REVISAR:
+          ${rawDraft}
+          
+          CRITERIOS DE EVALUACIÓN:
+          1. ¿Se usa la tercera persona impersonal en todo momento?
+          2. ¿La profundidad técnica es adecuada para un nivel de pregrado/postgrado?
+          3. ¿Hay coherencia lógica entre los párrafos?
+          4. ¿Las fuentes citadas parecen válidas o son alucinaciones?
+          
+          RESPONDE CON:
+          - "APROBADO" si el texto es impecable.
+          - De lo contrario, lista los errores específicos para que el Editor los corrija.`;
+
+          const review = await runAI(reviewPrompt);
+
+          if (review.trim().toUpperCase() === "APROBADO") {
+            fullChapterContent += `\n\n## ${sub}\n\n${rawDraft}`;
+          } else {
+            // 3. Editor Agent (Polishing)
+            const editPrompt = `Como editor académico experto, re-escribe y mejora el siguiente texto incorporando TODAS las correcciones del tutor.
+            
+            TEXTO ORIGINAL:
+            ${rawDraft}
+            
+            CRÍTICA DEL TUTOR:
+            ${review}
+            
+            REGLAS:
+            - Devuelve el texto COMPLETO y MEJORADO.
+            - Mantén el formato Markdown.
+            - Asegura un estilo fluido y profesional.`;
+
+            const editedText = await runAI(editPrompt);
+            fullChapterContent += `\n\n## ${sub}\n\n${editedText}`;
+          }
+        }
+
+        // Special Phase: Bibliography Validation for Chapter II
+        if (chunk.chapter.includes("Capítulo II")) {
+          const validateSourcesPrompt = `Como bibliotecario académico, extrae y valida las fuentes citadas en el siguiente texto de Marco Teórico.
+          Asegúrate de que los autores y años correspondan a obras reales en el área de investigación.
+          Si encuentras citas dudosas, cámbialas por fuentes académicas clásicas o reales del tema.
+          
+          TEXTO:
+          ${fullChapterContent}
+          
+          Devuelve el texto corregido si es necesario, o el mismo texto si las fuentes son sólidas.`;
+          
+          fullChapterContent = await runAI(validateSourcesPrompt);
+        }
+
+        // Final Chapter Polish
+        const polishPrompt = `Une y pule el contenido del capítulo "${chunk.chapter}" para que tenga una transición fluida entre secciones.
+        No elimines contenido, solo mejora los conectores entre párrafos.
+        
+        CONTENIDO:
+        ${fullChapterContent}
+        
+        Devuelve el capítulo completo en formato Markdown.`;
+
+        const finalChapter = await runAI(polishPrompt);
+
+        // Save progress for this chapter
+        await projectRef.update({
+          [`chunks.${i}.content`]: finalChapter,
+          [`chunks.${i}.status`]: "completed",
+          updatedAt: Date.now()
+        });
+      }
+
+      // Final Completion
+      await projectRef.update({
+        generationStatus: "completed",
+        updatedAt: Date.now()
+      });
+
+    } catch (error: any) {
+      console.error("Background Orchestration Error:", error);
+      await projectRef.update({
+        generationStatus: "error",
+        updatedAt: Date.now()
+      });
+    }
+  }
+
+  function getSubsectionsForChapter(chapter: string, university: string): string[] {
+    if (chapter.includes("Introducción")) return ["Contextualización", "Objetivos", "Importancia"];
+    if (chapter.includes("Capítulo I")) return ["Planteamiento del Problema", "Objetivos de Investigación", "Justificación", "Alcance y Limitaciones"];
+    if (chapter.includes("Capítulo II")) return ["Antecedentes de la Investigación", "Bases Teóricas", "Bases Legales", "Definición de Términos Básicos"];
+    if (chapter.includes("Capítulo III")) return ["Tipo y Diseño de Investigación", "Población y Muestra", "Técnicas e Instrumentos de Recolección de Datos", "Validez y Confiabilidad"];
+    if (chapter.includes("Capítulo IV")) return ["Presentación de Resultados", "Análisis de Datos", "Discusión de Resultados"];
+    if (chapter.includes("Capítulo V")) return ["Conclusiones", "Recomendaciones"];
+    return ["General"];
+  }
+
+  // Keep the generic AI endpoint for smaller tasks if needed
+  app.post("/api/ai/generate", async (req, res) => {
+    const { prompt, temperature = 0.3 } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+    try {
+      const content = await runAI(prompt, temperature);
+      res.json({ content });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -136,15 +305,18 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const PORT = 3000;
+  const HOST = "0.0.0.0";
+
+  app.listen(PORT, HOST, () => {
+    console.log(`Academic Backend running on http://${HOST}:${PORT}`);
   });
 }
 

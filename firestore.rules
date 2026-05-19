@@ -1,70 +1,39 @@
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Safety Net
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Helpers
+    // Safety helpers
     function isSignedIn() {
       return request.auth != null;
     }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+    
+    // Helper to check if user is admin
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin" ||
+        request.auth.token.email == "darkangeldiaz@gmail.com"
+      );
     }
 
-    function isProjectOwner(projectId) {
-      return isSignedIn() && 
-        get(/databases/$(database)/documents/projects/$(projectId)).data.userId == request.auth.uid;
-    }
-
-    function isValidId(id) {
-       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    // Validation Blueprints
-    function isValidUser(data) {
-      return data.keys().hasAll(['uid', 'email', 'role', 'subscription']) &&
-             data.uid is string &&
-             data.email is string &&
-             data.role in ['student', 'admin'] &&
-             data.subscription in ['free', 'pro'];
-    }
-
-    function isValidProject(data) {
-      return data.keys().hasAll(['id', 'userId', 'title', 'createdAt', 'updatedAt']) &&
-             data.userId == request.auth.uid &&
-             data.title is string && data.title.size() <= 200;
-    }
-
-    // User profiles
+    // Rules for users collection
     match /users/{userId} {
-      allow get: if isOwner(userId);
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId) && 
-                      request.resource.data.diff(resource.data).affectedKeys().hasAny(['email', 'subscription', 'role']);
+      allow read: if true;
+      allow write: if isSignedIn() && (isAdmin() || request.auth.uid == userId);
     }
 
-    // Projects
-    match /projects/{projectId} {
-      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn();
-      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    match /thesis_projects/{projectId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if isSignedIn() && (
+        (resource == null && request.resource.data.userId == request.auth.uid) || 
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        isAdmin()
+      );
+    }
 
-      // Sub-collections
-      match /chunks/{chunkId} {
-        allow read, write: if isProjectOwner(projectId);
-      }
-      
-      match /citations/{citationId} {
-        allow read, write: if isProjectOwner(projectId);
-      }
+    // Fallback
+    match /{document=**} {
+      allow read, write: if isSignedIn();
     }
   }
 }
