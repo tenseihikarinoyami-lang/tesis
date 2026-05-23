@@ -1,4 +1,5 @@
 import { ThesisProject, AIProvider, ProjectGenerationStatus } from "../types";
+import { projectService } from "./projectService";
 
 export interface AIResponse {
   content: string;
@@ -42,21 +43,69 @@ export async function orchestrateThesis(
   project: ThesisProject,
   onUpdate: (status: ProjectGenerationStatus, message: string, updatedProject: ThesisProject) => void
 ) {
+  const currentProject = { ...project };
   try {
-    onUpdate(ProjectGenerationStatus.PLANNING, "Iniciando orquestación asíncrona en el servidor...", project);
-    
-    const response = await fetch(`/api/projects/${project.id}/orchestrate`, {
-      method: "POST"
-    });
+    currentProject.generationStatus = ProjectGenerationStatus.PLANNING;
+    onUpdate(ProjectGenerationStatus.PLANNING, "Planificando la redacción de los capítulos académicos...", currentProject);
+    await projectService.updateProject(project.id, { generationStatus: ProjectGenerationStatus.PLANNING });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Falló la conexión con el servidor");
+    const updatedChunks = currentProject.chunks.map(c => ({ ...c }));
+    const totalChapters = updatedChunks.length;
+
+    for (let i = 0; i < totalChapters; i++) {
+      const chunk = updatedChunks[i];
+      if (chunk.status === "completed") continue;
+
+      // Update current chunk to generating
+      chunk.status = "generating";
+      currentProject.generationStatus = ProjectGenerationStatus.WRITING;
+      currentProject.chunks = updatedChunks;
+      
+      onUpdate(
+        ProjectGenerationStatus.WRITING, 
+        `Redactando capítulo: "${chunk.chapter}"... Esto puede tomar de 1 a 2 minutos.`, 
+        currentProject
+      );
+      
+      await projectService.updateProject(project.id, { 
+        generationStatus: ProjectGenerationStatus.WRITING,
+        chunks: updatedChunks
+      });
+
+      // Generate content via the API proxy (which only does model calls and requires no database permissions)
+      const prompt = `Actúa como un experto en metodología de la universidad ${project.university}. Redacta el capítulo "${chunk.chapter}" para la tesis "${project.title}". Usa estilo ${project.citationStyle || "APA"}. Mínimo 1000 palabras de alta calidad académica.`;
+      
+      const response = await generateContent(prompt, { section: chunk.chapter });
+      
+      // Complete chunk
+      chunk.content = response.content;
+      chunk.status = "completed";
+      currentProject.chunks = updatedChunks;
+
+      onUpdate(
+        ProjectGenerationStatus.WRITING, 
+        `Guardando capítulo completado: "${chunk.chapter}"...`, 
+        currentProject
+      );
+
+      await projectService.updateProject(project.id, { 
+        generationStatus: ProjectGenerationStatus.WRITING,
+        chunks: updatedChunks
+      });
     }
 
-    onUpdate(ProjectGenerationStatus.WRITING, "El servidor está procesando el proyecto. Ya puedes cerrar esta pestaña si lo deseas.", project);
+    currentProject.generationStatus = ProjectGenerationStatus.COMPLETED;
+    onUpdate(ProjectGenerationStatus.COMPLETED, "¡Tesis generada exitosamente en su totalidad!", currentProject);
+    await projectService.updateProject(project.id, { 
+      generationStatus: ProjectGenerationStatus.COMPLETED 
+    });
+
   } catch (error: any) {
     console.error("Orchestration error:", error);
-    onUpdate(ProjectGenerationStatus.ERROR, error.message || "Error en el servidor.", project);
+    currentProject.generationStatus = ProjectGenerationStatus.ERROR;
+    onUpdate(ProjectGenerationStatus.ERROR, error.message || "Se produjo un error durante la generación automática.", currentProject);
+    await projectService.updateProject(project.id, { 
+      generationStatus: ProjectGenerationStatus.ERROR 
+    });
   }
 }

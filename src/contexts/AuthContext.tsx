@@ -19,6 +19,7 @@ interface AuthContextType {
   isAdmin: boolean;
   signIn: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  updateUserInContext: (updatedData: Partial<AppUser>) => void;
   error: string | null;
 }
 
@@ -45,7 +46,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 const isExpired = freshData.expiresAt && Date.now() > freshData.expiresAt;
                 if (isExpired || freshData.status === "expired") {
                   console.warn("Session expired during background check");
-                  logout();
+                  localStorage.removeItem("tm_session");
+                  setAppUser(null);
                   return;
                 }
                 setAppUser(freshData);
@@ -147,6 +149,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAppUser(null);
   };
 
+  const updateUserInContext = (updatedData: Partial<AppUser>) => {
+    if (appUser) {
+      const updated = { ...appUser, ...updatedData };
+      setAppUser(updated);
+      localStorage.setItem("tm_session", JSON.stringify(updated));
+    }
+  };
+
   return (
     <AuthContext.Provider value={{ 
       user: appUser, 
@@ -155,6 +165,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isAdmin: appUser?.role === "admin", 
       signIn, 
       logout,
+      updateUserInContext,
       error 
     }}>
       {children}

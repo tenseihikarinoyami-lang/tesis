@@ -16,13 +16,21 @@ import { ThesisProject, THESIS_CHAPTERS, ProjectGenerationStatus } from "../type
 const COLLECTION_NAME = "thesis_projects";
 
 export const projectService = {
-  async getAllProjects(userId: string): Promise<ThesisProject[]> {
+  async getAllProjects(userId: string, isAdmin?: boolean): Promise<ThesisProject[]> {
     try {
-      const q = query(
-        collection(db, COLLECTION_NAME),
-        where("userId", "==", userId),
-        orderBy("updatedAt", "desc")
-      );
+      let q;
+      if (isAdmin) {
+        q = query(
+          collection(db, COLLECTION_NAME),
+          orderBy("updatedAt", "desc")
+        );
+      } else {
+        q = query(
+          collection(db, COLLECTION_NAME),
+          where("userId", "==", userId),
+          orderBy("updatedAt", "desc")
+        );
+      }
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => doc.data() as ThesisProject);
     } catch (error) {

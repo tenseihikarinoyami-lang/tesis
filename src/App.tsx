@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Link } from "react-ro
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import DashboardPage from "./pages/DashboardPage";
 import ProjectPage from "./pages/ProjectPage";
+import ProfilePage from "./pages/ProfilePage";
 import { LogOut, GraduationCap, Users, ShieldAlert, BookOpen, LayoutDashboard, Copy, CheckCircle2, Loader2, Lock, User } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -20,6 +21,15 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; requireAdmin?: boole
     </div>
   );
   if (!user) return <Navigate to="/login" />;
+  
+  // Real-time expiration & block check
+  if (user && user.role !== "admin") {
+    const isExpired = user.expiresAt && Date.now() > user.expiresAt;
+    if (isExpired || user.status === "expired") {
+      return <Navigate to="/login" />;
+    }
+  }
+
   if (requireAdmin && !isAdmin) return <Navigate to="/" />;
   return <>{children}</>;
 };
@@ -219,6 +229,10 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 <LayoutDashboard className="w-4 h-4" />
                 WORKSPACE
               </Link>
+              <Link to="/profile" className="px-4 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-white/50 hover:text-white hover:bg-white/5 rounded-xl transition-all flex items-center gap-2">
+                <User className="w-4 h-4" />
+                MI PERFIL
+              </Link>
               {isAdmin && (
                 <Link to="/users" className="px-4 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-white/50 hover:text-white hover:bg-white/5 rounded-xl transition-all flex items-center gap-2">
                   <Users className="w-4 h-4" />
@@ -231,15 +245,15 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           <div className="flex items-center gap-6">
             {user && (
               <div className="flex items-center gap-6 text-white">
-                <div className="hidden sm:flex items-center gap-4 px-4 py-2 bg-white/5 rounded-[1.25rem] border border-white/5">
-                   <div className="flex flex-col items-end">
+                <Link to="/profile" className="flex items-center gap-4 px-4 py-2 hover:bg-white/10 rounded-[1.25rem] border border-white/5 transition-colors bg-white/5">
+                   <div className="hidden sm:flex flex-col items-end">
                       <span className="text-[11px] font-bold tracking-tight">{user.displayName}</span>
                       <span className="text-[9px] text-white/40 font-medium tracking-tight truncate max-w-[120px] uppercase">{user.role}</span>
                    </div>
                    <div className="w-9 h-9 rounded-[0.8rem] bg-brand-blue/20 border border-brand-blue/30 flex items-center justify-center text-brand-blue font-bold">
-                      {user.displayName?.[0]}
+                      {user.displayName?.[0] || "?"}
                    </div>
-                </div>
+                </Link>
 
                 <div className="h-6 w-px bg-white/10" />
                 <button 
@@ -280,6 +294,11 @@ const App: React.FC = () => {
           <Route path="/users" element={
             <ProtectedRoute requireAdmin>
               <Layout><DashboardPage initialTab="users" /></Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/profile" element={
+            <ProtectedRoute>
+              <Layout><ProfilePage /></Layout>
             </ProtectedRoute>
           } />
           <Route path="*" element={<Navigate to="/" />} />

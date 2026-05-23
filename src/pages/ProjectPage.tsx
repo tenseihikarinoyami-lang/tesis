@@ -93,6 +93,30 @@ const ProjectPage: React.FC = () => {
     }
   };
 
+  const handleResetGeneration = async () => {
+    if (!project) return;
+    setIsSaving(true);
+    try {
+      const resetChunks = project.chunks.map(chunk => {
+        if (chunk.status === "generating") {
+          return { ...chunk, status: "pending" as const };
+        }
+        return chunk;
+      });
+
+      await projectService.updateProject(project.id, {
+        generationStatus: ProjectGenerationStatus.IDLE,
+        chunks: resetChunks
+      });
+      setIsOrchestrating(false);
+      setStatusMsg("Orquestación detenida.");
+    } catch (err) {
+      console.error("Error resetting generation:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const runFullGeneration = async () => {
     if (!project || isOrchestrating) return;
     
@@ -218,6 +242,15 @@ const ProjectPage: React.FC = () => {
                    <FileSearch className="w-5 h-5" />
                  </div>
                 <span className="text-[10px] font-black uppercase tracking-[0.3em] text-white">AI Core Advisor</span>
+                {isOrchestrating && (
+                  <button 
+                    onClick={handleResetGeneration} 
+                    className="ml-auto px-2.5 py-1 bg-red-500 hover:bg-red-600 text-[8px] font-black text-white uppercase tracking-widest rounded-lg transition-all active:scale-95 shadow-lg shadow-red-500/20"
+                    title="Detener la orquestación actual para reiniciar"
+                  >
+                    Detener
+                  </button>
+                )}
              </div>
              <div className="relative z-10">
                 {statusMsg ? (
@@ -414,6 +447,51 @@ const ProjectPage: React.FC = () => {
                          <option value="UPTAEB">UPTAEB</option>
                       </select>
                    </div>
+                </div>
+              </div>
+
+              {/* Troubleshooting / Danger Zone */}
+              <div className="px-10 py-8 border-t border-white/5 space-y-4">
+                <label className="text-[10px] font-black text-red-500 uppercase tracking-[0.3em]">Solución de Problemas (Zona de Peligro)</label>
+                <div className="flex flex-col sm:flex-row gap-4">
+                  <button
+                    onClick={async () => {
+                      if (window.confirm("¿Estás seguro de que deseas detener la generación actual y resetear el estado a inactivo?")) {
+                        await handleResetGeneration();
+                        setShowSettings(false);
+                      }
+                    }}
+                    className="flex-1 px-5 py-4 bg-red-500/10 hover:bg-red-500 hover:text-white border border-red-500/20 text-red-400 rounded-2xl font-bold text-xs uppercase tracking-wider transition-all"
+                  >
+                    Detener / Forzar Inactividad
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (window.confirm("¿Estás seguro de que deseas borrar el contenido de TODOS los capítulos para iniciar una generación desde cero? Esta acción no se puede deshacer.")) {
+                        setIsSaving(true);
+                        try {
+                          const resetChunks = project.chunks.map(chunk => ({
+                            ...chunk,
+                            content: "",
+                            status: "pending" as const
+                          }));
+                          await projectService.updateProject(project.id, {
+                            generationStatus: ProjectGenerationStatus.IDLE,
+                            chunks: resetChunks
+                          });
+                          alert("Se han borrado todos los capítulos. Ya puedes orquestar de nuevo.");
+                          setShowSettings(false);
+                        } catch (e) {
+                          console.error(e);
+                        } finally {
+                          setIsSaving(false);
+                        }
+                      }
+                    }}
+                    className="flex-1 px-5 py-4 bg-amber-500/10 hover:bg-amber-500 hover:text-white border border-amber-500/20 text-amber-400 rounded-2xl font-bold text-xs uppercase tracking-wider transition-all"
+                  >
+                    Reiniciar Todo desde Cero
+                  </button>
                 </div>
               </div>
 

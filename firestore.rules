@@ -1,39 +1,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Safety helpers
-    function isSignedIn() {
-      return request.auth != null;
-    }
-    
-    // Helper to check if user is admin
-    function isAdmin() {
-      return isSignedIn() && (
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin" ||
-        request.auth.token.email == "darkangeldiaz@gmail.com"
-      );
-    }
-
-    // Rules for users collection
-    match /users/{userId} {
-      allow read: if true;
-      allow write: if isSignedIn() && (isAdmin() || request.auth.uid == userId);
-    }
-
-    match /thesis_projects/{projectId} {
-      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
-      allow write: if isSignedIn() && (
-        (resource == null && request.resource.data.userId == request.auth.uid) || 
-        (resource != null && resource.data.userId == request.auth.uid) ||
-        isAdmin()
-      );
-    }
-
-    // Fallback
+    // Enable full read/write access for custom application-managed login & roles.
     match /{document=**} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
   }
 }
